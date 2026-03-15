@@ -303,6 +303,12 @@ class SessionStore:
         with open(SESSIONS_FILE, "w") as f:
             json.dump(self._data, f, indent=2, ensure_ascii=False)
 
+    async def _save_async(self):
+        """异步保存，使用锁保护并发写入"""
+        async with self._save_lock:
+            with open(SESSIONS_FILE, "w") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
+
     def _dedup_all_histories(self):
         """启动时清理所有用户 history 中的重复 session_id"""
         changed = False
