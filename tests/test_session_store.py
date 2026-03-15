@@ -42,7 +42,7 @@ def test_get_current_with_chat_id_private(temp_store):
 
     # Should return default session for new user
     session = temp_store.get_current(user_id, chat_id)
-    assert session.model == "claude-opus-4-6"
+    assert session.model == "claude-sonnet-4-6"
     assert session.permission_mode == "bypassPermissions"
 
 
@@ -53,7 +53,7 @@ def test_get_current_with_chat_id_group(temp_store):
 
     # Should return default session for new group
     session = temp_store.get_current(user_id, chat_id)
-    assert session.model == "claude-opus-4-6"
+    assert session.model == "claude-sonnet-4-6"
     assert session.permission_mode == "bypassPermissions"
 
 
