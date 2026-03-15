@@ -3,6 +3,7 @@
 流式方案：发送内联卡片消息 → 用 patch 逐步更新内容（比 cardkit 流式卡片更简单可靠）。
 """
 
+import asyncio
 import json
 import os
 import tempfile
@@ -39,26 +40,61 @@ class FeishuClient:
         self._app_id = app_id
         self._app_secret = app_secret
 
+    async def _retry_with_backoff(self, coro_func, max_retries: int = 3, initial_delay: float = 0.5):
+        """
+        执行异步操作，失败时指数退避重试。
+
+        Args:
+            coro_func: 返回 coroutine 的可调用对象
+            max_retries: 最多重试次数（不包括首次尝试）
+            initial_delay: 初始延迟秒数
+
+        Returns:
+            操作结果
+
+        Raises:
+            最后一次尝试的异常
+        """
+        delay = initial_delay
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                return await coro_func()
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    print(f"[retry] 第 {attempt + 1} 次失败，{delay:.1f}s 后重试: {e}", flush=True)
+                    await asyncio.sleep(delay)
+                    delay *= 2  # 指数退避
+                else:
+                    print(f"[retry] 已达最大重试次数 {max_retries + 1}，放弃", flush=True)
+
+        raise last_error
+
     # ── 发送消息 ──────────────────────────────────────────────
 
     async def send_card_to_user(self, open_id: str, content: str = "", loading: bool = True) -> str:
-        """向用户发送卡片消息，返回 message_id"""
-        req = (
-            CreateMessageRequest.builder()
-            .receive_id_type("open_id")
-            .request_body(
-                CreateMessageRequestBody.builder()
-                .receive_id(open_id)
-                .msg_type("interactive")
-                .content(_card_json(content, loading=loading))
+        """向用户发送卡片消息，返回 message_id（带重试）"""
+        async def _send():
+            req = (
+                CreateMessageRequest.builder()
+                .receive_id_type("open_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(open_id)
+                    .msg_type("interactive")
+                    .content(_card_json(content, loading=loading))
+                    .build()
+                )
                 .build()
             )
-            .build()
-        )
-        resp = await self.client.im.v1.message.acreate(req)
-        if not resp.success():
-            raise RuntimeError(f"发送卡片消息失败: {resp.code} {resp.msg}")
-        return resp.data.message_id
+            resp = await self.client.im.v1.message.acreate(req)
+            if not resp.success():
+                raise RuntimeError(f"发送卡片消息失败: {resp.code} {resp.msg}")
+            return resp.data.message_id
+
+        return await self._retry_with_backoff(_send, max_retries=3)
 
     async def reply_card(self, message_id: str, content: str = "", loading: bool = True) -> str:
         """回复用户消息（卡片形式），触发通知。返回回复消息的 message_id"""
@@ -79,20 +115,26 @@ class FeishuClient:
         return resp.data.message_id
 
     async def update_card(self, message_id: str, content: str):
-        """用 patch 更新已发送的卡片内容（流式更新核心）"""
-        req = (
-            PatchMessageRequest.builder()
-            .message_id(message_id)
-            .request_body(
-                PatchMessageRequestBody.builder()
-                .content(_card_json(content, loading=False))
+        """用 patch 更新已发送的卡片内容（带重试）"""
+        async def _update():
+            req = (
+                PatchMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(
+                    PatchMessageRequestBody.builder()
+                    .content(_card_json(content, loading=False))
+                    .build()
+                )
                 .build()
             )
-            .build()
-        )
-        resp = await self.client.im.v1.message.apatch(req)
-        if not resp.success():
-            print(f"[warn] patch 卡片失败: {resp.code} {resp.msg}")
+            resp = await self.client.im.v1.message.apatch(req)
+            if not resp.success():
+                raise RuntimeError(f"patch 卡片失败: {resp.code} {resp.msg}")
+
+        try:
+            await self._retry_with_backoff(_update, max_retries=3)
+        except Exception as e:
+            print(f"[warn] 更新卡片最终失败: {e}", flush=True)
 
     async def download_image(self, message_id: str, image_key: str) -> str:
         """下载飞书图片到临时文件，返回本地路径"""
